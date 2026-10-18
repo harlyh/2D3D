@@ -76,7 +76,12 @@ python main.py --gui
 Select **3D TV mode (half-width SBS)** with the SBS format. A 1920x1080
 source produces two 960x1080 views in one 1920x1080 frame; select SBS 3D
 playback on your TV to stretch each view back to full width. With a custom
-`--eye-resolution W H`, the combined output is W x H in this mode.
+`--eye-resolution W H`, the combined output is W x H in this mode, except
+when W:H is narrower than 16:9: each eye receives centered black side bars
+before squeezing, widening the combined output to 16:9 (rounded up to an
+even width). For example, 1440x1080 becomes 1920x1080. Depth estimation and
+stereo warping still process the original image without the bars. Images
+at 16:9 or wider receive no padding.
 Dimensions are rounded down to even values for encoding. Default SBS output
 remains full width (3840x1080 for a 1920x1080 source). TV-mode filenames use
 `_stereo_hsbs.mp4`.

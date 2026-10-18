@@ -38,6 +38,7 @@ class Pipeline:
         returning True aborts cleanly (the partial output file is kept).
         tv_mode squeezes each SBS eye to half width for 3D TVs. eye_resolution
         describes the unsqueezed eye size (defaults to the source size).
+        Narrower eyes are pillarboxed to at least 16:9 before squeezing.
         """
         if tv_mode and format != "sbs":
             raise ValueError("3D TV mode requires SBS format")
@@ -54,9 +55,10 @@ class Pipeline:
         if ew < 2 or eh < 2:
             cap.release()
             raise ValueError("Eye resolution must be at least 2 x 2")
-        if tv_mode:
-            ew //= 2
-        out_w, out_h = {"sbs": (ew * 2, eh), "tb": (ew, eh * 2), "anaglyph": (ew, eh)}[format]
+        eye_size = (ew, eh)
+        packed_w, packed_h = self._tv_eye_size(eye_size) if tv_mode else eye_size
+        out_w, out_h = {"sbs": (packed_w * 2, packed_h), "tb": (ew, eh * 2),
+                        "anaglyph": (ew, eh)}[format]
 
         stereo_options = []
         if format in ("sbs", "tb"):
@@ -108,7 +110,8 @@ class Pipeline:
                 if not ok:
                     break
                 left, right = self.process_frame(frame)
-                encoder.stdin.write(self._compose(left, right, format, (ew, eh)).tobytes())
+                encoder.stdin.write(self._compose(left, right, format, eye_size,
+                                                 tv_mode=tv_mode).tobytes())
                 n += 1
                 if progress_callback and n % 5 == 0:
                     progress_callback(n, total)
@@ -145,10 +148,26 @@ class Pipeline:
         return frame, right
 
     @staticmethod
-    def _compose(left, right, format, eye_size):
+    def _tv_eye_size(eye_size):
+        width, height = eye_size
+        # Round the 16:9 canvas width up to an even pixel count so the
+        # combined half-SBS frame remains compatible with yuv420p.
+        canvas_width = max(width, 2 * ((height * 16 + 17) // 18))
+        return canvas_width // 2, height
+
+    @staticmethod
+    def _compose(left, right, format, eye_size, tv_mode=False):
         if (left.shape[1], left.shape[0]) != eye_size:
             left = cv2.resize(left, eye_size, interpolation=cv2.INTER_AREA)
             right = cv2.resize(right, eye_size, interpolation=cv2.INTER_AREA)
+        if tv_mode:
+            packed_size = Pipeline._tv_eye_size(eye_size)
+            padding = packed_size[0] * 2 - eye_size[0]
+            before, after = padding // 2, padding - padding // 2
+            left = cv2.copyMakeBorder(left, 0, 0, before, after, cv2.BORDER_CONSTANT, value=0)
+            right = cv2.copyMakeBorder(right, 0, 0, before, after, cv2.BORDER_CONSTANT, value=0)
+            left = cv2.resize(left, packed_size, interpolation=cv2.INTER_AREA)
+            right = cv2.resize(right, packed_size, interpolation=cv2.INTER_AREA)
         if format == "sbs":
             return np.ascontiguousarray(np.hstack((left, right)))
         if format == "tb":

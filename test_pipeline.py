@@ -28,6 +28,17 @@ def main():
     assert np.array_equal(left, frame)
     assert not np.array_equal(right, frame)
 
+    # Both eyes get their own centered pillarbox, before the half-width squeeze.
+    red = np.full((240, 320, 3), (0, 0, 255), dtype=np.uint8)
+    green = np.full((240, 320, 3), (0, 255, 0), dtype=np.uint8)
+    packed = Pipeline._compose(red, green, "sbs", (320, 240), tv_mode=True)
+    assert packed.shape == (240, 428, 3)
+    for eye, color in zip(np.hsplit(packed, 2), ((0, 0, 255), (0, 255, 0))):
+        assert np.all(eye[:, :27] == 0) and np.all(eye[:, -27:] == 0)
+        assert np.all(eye[:, 27:-27] == color), "Each eye must stay centered without cropping"
+    for width, height in ((320, 180), (480, 180)):
+        assert Pipeline._tv_eye_size((width, height)) == (width // 2, height)
+
     for fmt in ("tb", "anaglyph"):
         try:
             Pipeline(depth_fn=fake_depth).convert("unused.mp4", "unused_out.mp4",
@@ -48,9 +59,12 @@ def main():
             ("sbs", False, None, (640, 240), "mp4"),
             ("tb", False, None, (320, 480), "mp4"),
             ("anaglyph", False, None, (320, 240), "mp4"),
-            ("sbs", True, None, (320, 240), "mp4"),
+            ("sbs", True, None, (428, 240), "mp4"),
             # Odd compressed eye width is valid: the combined width is even.
             ("sbs", True, (322, 180), (322, 180), "mp4"),
+            ("sbs", True, (320, 180), (320, 180), "mp4"),
+            ("sbs", True, (480, 180), (480, 180), "mp4"),
+            ("sbs", True, (240, 240), (428, 240), "mkv"),
             ("sbs", False, None, (640, 240), "mkv"),
             ("tb", False, None, (320, 480), "mkv"),
         ]
