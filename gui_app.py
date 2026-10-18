@@ -7,6 +7,7 @@ determinate progress with fps + ETA, and cancellable conversions.
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -132,8 +133,9 @@ class App:
         self.cancel_btn = ttk.Button(actions, text="Cancel", command=self._cancel.set,
                                      state="disabled")
         self.cancel_btn.pack(side="left", padx=4)
-        self.reveal_btn = ttk.Button(actions, text="Show in Finder",
-                                     command=lambda: subprocess.run(["open", "-R", self.output_path.get()]))
+        reveal_label = {"win32": "Show in File Explorer", "darwin": "Show in Finder"}.get(
+            sys.platform, "Open Containing Folder")
+        self.reveal_btn = ttk.Button(actions, text=reveal_label, command=self._reveal_output)
         self.reveal_btn.pack(side="left", padx=4)
         self.reveal_btn.pack_forget()
 
@@ -150,6 +152,22 @@ class App:
             scale.bind("<ButtonRelease-1>", lambda _e: on_release())
 
     # ---------- files ----------
+
+    def _reveal_output(self):
+        path = os.path.abspath(self.output_path.get())
+        if not os.path.isfile(path):
+            messagebox.showerror("Error", "The output video could not be found")
+            return
+        if sys.platform == "win32":
+            command = ["explorer.exe", f"/select,{path}"]
+        elif sys.platform == "darwin":
+            command = ["open", "-R", path]
+        else:
+            command = ["xdg-open", os.path.dirname(path)]
+        try:
+            subprocess.Popen(command)
+        except OSError as e:
+            messagebox.showerror("Error", f"Could not open the file manager: {e}")
 
     def browse_input(self):
         filename = filedialog.askopenfilename(
