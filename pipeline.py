@@ -4,6 +4,7 @@ Frames stream from OpenCV straight into an ffmpeg stdin pipe — no temp files,
 original fps and audio preserved.
 """
 
+import os
 import shutil
 import subprocess
 
@@ -29,12 +30,17 @@ class Pipeline:
         self._prev_depth = None
 
     def convert(self, input_path, output_path, format="sbs", eye_resolution=None,
-                crf=18, preset="medium", progress_callback=None, should_stop=None):
+                crf=18, preset="medium", progress_callback=None, should_stop=None,
+                tv_mode=False):
         """Convert a 2D video to stereo 3D. format: "sbs", "tb" or "anaglyph".
 
         progress_callback(n, total) is called every few frames; should_stop()
         returning True aborts cleanly (the partial output file is kept).
+        tv_mode squeezes each SBS eye to half width for 3D TVs. eye_resolution
+        describes the unsqueezed eye size (defaults to the source size).
         """
+        if tv_mode and format != "sbs":
+            raise ValueError("3D TV mode requires SBS format")
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {input_path}")
@@ -45,8 +51,25 @@ class Pipeline:
 
         ew, eh = eye_resolution or (src_w, src_h)
         ew, eh = ew - ew % 2, eh - eh % 2  # x264 wants even dimensions
+        if ew < 2 or eh < 2:
+            cap.release()
+            raise ValueError("Eye resolution must be at least 2 x 2")
+        if tv_mode:
+            ew //= 2
         out_w, out_h = {"sbs": (ew * 2, eh), "tb": (ew, eh * 2), "anaglyph": (ew, eh)}[format]
 
+        stereo_options = []
+        if format in ("sbs", "tb"):
+            # H.264 frame-packing SEI survives MP4 muxing; stereo_mode also
+            # sets Matroska's StereoMode when writing MKV. Left eye comes first.
+            packing, stereo_mode = {"sbs": (3, "left_right"), "tb": (4, "top_bottom")}[format]
+            stereo_options = ["-x264-params", f"frame-packing={packing}",
+                              "-metadata:s:v:0", f"stereo_mode={stereo_mode}"]
+
+        # MP4 needs stream-level stereo side data to write its st3d box.
+        # Pass through a Matroska pipe so the remuxer receives that metadata;
+        # H.264 SEI alone only describes decoded frames, not the MP4 track.
+        remux_mp4 = format in ("sbs", "tb") and os.fspath(output_path).lower().endswith(".mp4")
         encoder = subprocess.Popen(
             ["ffmpeg", "-y", "-loglevel", "error",
              "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{out_w}x{out_h}",
@@ -55,9 +78,27 @@ class Pipeline:
              "-map", "0:v", "-map", "1:a?",
              "-c:v", "libx264", "-preset", preset, "-crf", str(crf),
              "-pix_fmt", "yuv420p", "-c:a", "copy",
-             output_path],
+             *stereo_options,
+             *(["-f", "matroska", "pipe:1"] if remux_mp4 else [output_path])],
             stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE if remux_mp4 else None,
         )
+
+        muxer = None
+        if remux_mp4:
+            try:
+                muxer = subprocess.Popen(
+                    ["ffmpeg", "-y", "-loglevel", "error", "-i", "pipe:0",
+                     "-map", "0", "-c", "copy", "-strict", "unofficial", output_path],
+                    stdin=encoder.stdout)
+            except OSError:
+                encoder.stdin.close()
+                encoder.stdout.close()
+                encoder.terminate()
+                encoder.wait()
+                cap.release()
+                raise
+            encoder.stdout.close()
 
         self._prev_depth = None
         n = 0
@@ -77,11 +118,15 @@ class Pipeline:
             cap.release()
             encoder.stdin.close()
             encoder.wait()
+            if muxer is not None:
+                muxer.wait()
 
         if n == 0:
             raise ValueError(f"No frames decoded from {input_path}")
         if encoder.returncode != 0:
             raise RuntimeError(f"ffmpeg exited with code {encoder.returncode}")
+        if muxer is not None and muxer.returncode != 0:
+            raise RuntimeError(f"ffmpeg MP4 remux exited with code {muxer.returncode}")
         return output_path
 
     def process_frame(self, frame):
